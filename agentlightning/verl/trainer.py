@@ -745,7 +745,7 @@ class AgentLightningRayPPOTrainer(RayPPOTrainer):
             self.global_steps += 1
 
     def _validate(self, merged: bool = False):
-        """Run validation through the Agent Lightning rollout manager."""
+        """Run validation and aggregate scalar metrics over the full dataloader."""
         # verl 0.8.0 moved rollout server state behind llm_server_manager.
         has_llm_server_manager = hasattr(self, "llm_server_manager")
         if has_llm_server_manager:
@@ -754,7 +754,17 @@ class AgentLightningRayPPOTrainer(RayPPOTrainer):
             server_addresses = list(self.async_rollout_manager.server_addresses)  # pyright: ignore[reportAttributeAccessIssue]
         assert server_addresses, "_validate called before rollout server addresses are available"
 
+        count_metrics = {"val/n_rollouts", "val/n_rollouts_w_trace", "val/n_rollouts_w_reward"}
+        # Match the populations used by RolloutAdapter.get_test_metrics: reward includes
+        # every rollout, while response lengths and turn counts require a trace.
+        mean_metric_weights = {
+            "val/reward": "val/n_rollouts",
+            "val/mean_response_length_per_turn": "val/n_rollouts_w_trace",
+            "val/mean_total_response_length_per_rollout": "val/n_rollouts_w_trace",
+            "val/turn_count": "val/n_rollouts_w_trace",
+        }
         merged_metrics: dict[str, Any] = {}
+        weighted_sums: dict[str, float] = defaultdict(float)
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
 
@@ -775,6 +785,15 @@ class AgentLightningRayPPOTrainer(RayPPOTrainer):
 
             _, val_metrics_step = self._rollout(test_gen_batch, is_train=False)
             for k, v in val_metrics_step.items():
-                merged_metrics[k] = v
+                if k in count_metrics:
+                    merged_metrics[k] = merged_metrics.get(k, 0) + v
+                elif k in mean_metric_weights:
+                    weighted_sums[k] += v * val_metrics_step[mean_metric_weights[k]]
+                else:
+                    # Operational metrics, such as gateway drain timing, describe the last batch.
+                    merged_metrics[k] = v
+
+        for k, weighted_sum in weighted_sums.items():
+            merged_metrics[k] = weighted_sum / merged_metrics[mean_metric_weights[k]]
 
         return merged_metrics

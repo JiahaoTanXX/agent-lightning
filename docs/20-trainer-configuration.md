@@ -72,6 +72,12 @@ run_ppo(config, train_dataset=train_dataset, val_dataset=val_dataset)
 
 `run_ppo` accepts non-empty in-memory sequences as `train_dataset` and `val_dataset`. Each element is read as a JSON-like object. When the trainer creates a rollout, each element in the list becomes the rollout's `input` field. The Controller can then map fields from `input` into the agent's environment or Kubernetes Job template.
 
+### Validation metrics
+
+Validation scalar metrics summarize all batches in the validation dataloader, including repeated samples when `actor_rollout_ref.rollout.val_kwargs.n > 1`. The `val/n_rollouts`, `val/n_rollouts_w_trace`, and `val/n_rollouts_w_reward` counters are summed across batches.
+
+`val/reward` is the mean over all completed validation rollouts, using `agentlightning.reward_fillna_value` for missing rewards. Response-length metrics and `val/turn_count` average only over rollouts with traces. In particular, `val/mean_response_length_per_turn` first averages the response lengths within each rollout, then averages those per-rollout means. Batch means are weighted by their corresponding rollout counts, so an uneven final batch does not distort the full-validation statistics.
+
 ## Rollout execution
 
 The Controller has two execution modes: `local` and `k8s`. Configure the matching section below, and the Controller reads that section according to its running mode.
